@@ -84,6 +84,16 @@ class App:
         self.out_var = tk.StringVar(value="hh_vacancies")
         ttk.Entry(form, textvariable=self.out_var).grid(row=6, column=1, sticky="ew", pady=2)
 
+        ttk.Label(form, text="Client ID:").grid(row=7, column=0, sticky="w", pady=2)
+        self.client_id_var = tk.StringVar()
+        ttk.Entry(form, textvariable=self.client_id_var).grid(row=7, column=1, sticky="ew", pady=2)
+        ttk.Label(form, text="(dev.hh.ru)").grid(row=7, column=2, sticky="w")
+
+        ttk.Label(form, text="Client Secret:").grid(row=8, column=0, sticky="w", pady=2)
+        self.client_secret_var = tk.StringVar()
+        ttk.Entry(form, textvariable=self.client_secret_var,
+                  show="*").grid(row=8, column=1, sticky="ew", pady=2)
+
     def _setting_vars(self):
         return {
             "text": self.text_var,
@@ -97,6 +107,8 @@ class App:
             "days": self.days_var,
             "only_with_salary": self.only_salary_var,
             "out": self.out_var,
+            "client_id": self.client_id_var,
+            "client_secret": self.client_secret_var,
         }
 
     def load_settings(self):
@@ -205,6 +217,8 @@ class App:
             days=days,
             only_with_salary=self.only_salary_var.get(),
             out=self.out_var.get().strip() or "hh_vacancies",
+            client_id=self.client_id_var.get().strip(),
+            client_secret=self.client_secret_var.get().strip(),
         )
 
     def start(self):

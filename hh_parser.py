@@ -2,6 +2,7 @@ import argparse
 import csv
 import html
 import json
+import os
 import re
 import sys
 import time
@@ -13,6 +14,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 BASE_URL = "https://api.hh.ru/vacancies"
+TOKEN_URL = "https://api.hh.ru/token"
 SUGGEST_URL = "https://api.hh.ru/suggests/areas"
 HEADERS = {"User-Agent": "hh-vacancies-parser/1.0"}
 MAX_PAGES = 200
@@ -24,12 +26,32 @@ class ParseError(Exception):
     pass
 
 
-def make_session():
+def make_session(access_token=None):
     session = requests.Session()
     session.headers.update(HEADERS)
+    if access_token:
+        session.headers["Authorization"] = f"Bearer {access_token}"
     retry = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
     session.mount("https://", HTTPAdapter(max_retries=retry))
     return session
+
+
+def get_app_token(client_id, client_secret):
+    try:
+        resp = requests.post(TOKEN_URL, data={
+            "grant_type": "client_credentials",
+            "client_id": client_id,
+            "client_secret": client_secret,
+        }, timeout=15)
+    except requests.RequestException as exc:
+        raise ParseError(f"Ошибка запроса токена приложения: {exc}")
+    if resp.status_code != 200:
+        raise ParseError(
+            f"Не удалось получить токен приложения (HTTP {resp.status_code}): {resp.text[:300]}")
+    token = resp.json().get("access_token")
+    if not token:
+        raise ParseError("API не вернул access_token")
+    return token
 
 
 def strip_html(value):
@@ -103,9 +125,10 @@ def fetch_page(session, params):
         ip = describe_public_ip()
         ip_note = f" Твой внешний IP: {ip}." if ip else ""
         raise ParseError(
-            "API hh.ru вернул 403 Forbidden: поиск вакансий доступен только "
-            f"с российских IP-адресов.{ip_note} "
-            "Отключи VPN/прокси или включи выход через российский сервер.")
+            "API hh.ru вернул 403 Forbidden. Причины: (1) поиск вакансий требует "
+            "авторизацию приложения — зарегистрируйся на dev.hh.ru и укажи "
+            "Client ID / Client Secret; (2) доступ возможен только с российских "
+            f"IP-адресов.{ip_note} Отключи VPN/прокси или используй выход через РФ.")
     resp.raise_for_status()
     return resp.json()
 
@@ -128,7 +151,16 @@ def build_date_windows(days, now=None):
 
 
 def collect_vacancies(args, log=print, should_stop=None):
-    session = make_session()
+    client_id = getattr(args, "client_id", None) or os.environ.get("HH_CLIENT_ID")
+    client_secret = getattr(args, "client_secret", None) or os.environ.get("HH_CLIENT_SECRET")
+    token = None
+    if client_id and client_secret:
+        log("Получаю токен приложения...")
+        token = get_app_token(client_id, client_secret)
+        log("Токен приложения получен")
+    elif getattr(args, "client_id", None) or os.environ.get("HH_CLIENT_ID"):
+        raise ParseError("Указан только Client ID — нужен ещё Client Secret")
+    session = make_session(token)
     base_params = {
         "text": args.text,
         "per_page": min(args.per_page, 100),
@@ -243,6 +275,10 @@ def build_arg_parser():
     parser.add_argument("--limit", type=int, default=10**9, help="Остановиться после N вакансий")
     parser.add_argument("--delay", type=float, default=0.3, help="Пауза между запросами, сек")
     parser.add_argument("--only-with-salary", action="store_true", help="Только вакансии с зарплатой")
+    parser.add_argument("--client-id", default=os.environ.get("HH_CLIENT_ID"),
+                        help="Client ID приложения hh.ru (или env HH_CLIENT_ID)")
+    parser.add_argument("--client-secret", default=os.environ.get("HH_CLIENT_SECRET"),
+                        help="Client Secret приложения hh.ru (или env HH_CLIENT_SECRET)")
     parser.add_argument("--out", default="hh_vacancies", help="База имени выходных файлов")
     return parser
 

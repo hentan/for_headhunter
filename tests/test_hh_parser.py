@@ -149,6 +149,18 @@ class CliArgsTests(unittest.TestCase):
             args = hp.build_arg_parser().parse_args(["dev", "--experience", exp])
             self.assertEqual(args.experience, exp)
 
+    def test_client_credentials_flags(self):
+        args = hp.build_arg_parser().parse_args(
+            ["dev", "--client-id", "my-id", "--client-secret", "my-secret"])
+        self.assertEqual(args.client_id, "my-id")
+        self.assertEqual(args.client_secret, "my-secret")
+
+    def test_session_token_header(self):
+        session = hp.make_session("test-token-123")
+        self.assertEqual(session.headers["Authorization"], "Bearer test-token-123")
+        plain = hp.make_session()
+        self.assertNotIn("Authorization", plain.headers)
+
 
 if __name__ == "__main__":
     unittest.main()
