@@ -132,6 +132,18 @@ class SaveOutputsTests(unittest.TestCase):
         self.assertEqual(data["collected"], 0)
 
 
+class SecretProtectionTests(unittest.TestCase):
+    def test_roundtrip(self):
+        secret = "p@ssw0rd-секрет"
+        encoded = hp.protect_secret(secret)
+        self.assertNotIn(secret, encoded)
+        self.assertEqual(hp.unprotect_secret(encoded), secret)
+
+    def test_unprotect_garbage(self):
+        self.assertEqual(hp.unprotect_secret("not-a-valid-blob!"), "")
+        self.assertEqual(hp.unprotect_secret(""), "")
+
+
 class CliArgsTests(unittest.TestCase):
     def test_defaults(self):
         args = hp.build_arg_parser().parse_args([])

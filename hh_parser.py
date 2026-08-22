@@ -1,5 +1,8 @@
-import argparse
+﻿import argparse
+import base64
 import csv
+import ctypes
+from ctypes import wintypes as wt
 import html
 import json
 import os
@@ -26,6 +29,43 @@ class ParseError(Exception):
     pass
 
 
+class _DATA_BLOB(ctypes.Structure):
+    _fields_ = [("cbData", wt.DWORD), ("pbData", ctypes.c_void_p)]
+
+
+def protect_secret(text):
+    raw = text.encode("utf-16-le")
+    buffer = ctypes.create_string_buffer(raw, len(raw))
+    blob_in = _DATA_BLOB(len(raw), ctypes.cast(buffer, ctypes.c_void_p))
+    blob_out = _DATA_BLOB()
+    if not ctypes.windll.crypt32.CryptProtectData(
+            ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)):
+        raise OSError("CryptProtectData failed")
+    try:
+        raw = ctypes.string_at(blob_out.pbData, blob_out.cbData)
+    finally:
+        ctypes.windll.kernel32.LocalFree(ctypes.c_void_p(blob_out.pbData))
+    return base64.b64encode(raw).decode("ascii")
+
+
+def unprotect_secret(encoded):
+    try:
+        raw = base64.b64decode(encoded)
+    except (ValueError, TypeError):
+        return ""
+    buffer = ctypes.create_string_buffer(raw, len(raw))
+    blob_in = _DATA_BLOB(len(raw), ctypes.cast(buffer, ctypes.c_void_p))
+    blob_out = _DATA_BLOB()
+    if not ctypes.windll.crypt32.CryptUnprotectData(
+            ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)):
+        return ""
+    try:
+        data = ctypes.string_at(blob_out.pbData, blob_out.cbData)
+    finally:
+        ctypes.windll.kernel32.LocalFree(ctypes.c_void_p(blob_out.pbData))
+    return data.decode("utf-16-le")
+
+
 def make_session(access_token=None):
     session = requests.Session()
     session.headers.update(HEADERS)
@@ -44,13 +84,13 @@ def get_app_token(client_id, client_secret):
             "client_secret": client_secret,
         }, timeout=15)
     except requests.RequestException as exc:
-        raise ParseError(f"Ошибка запроса токена приложения: {exc}")
+        raise ParseError(f"РћС€РёР±РєР° Р·Р°РїСЂРѕСЃР° С‚РѕРєРµРЅР° РїСЂРёР»РѕР¶РµРЅРёСЏ: {exc}")
     if resp.status_code != 200:
         raise ParseError(
-            f"Не удалось получить токен приложения (HTTP {resp.status_code}): {resp.text[:300]}")
+            f"РќРµ СѓРґР°Р»РѕСЃСЊ РїРѕР»СѓС‡РёС‚СЊ С‚РѕРєРµРЅ РїСЂРёР»РѕР¶РµРЅРёСЏ (HTTP {resp.status_code}): {resp.text[:300]}")
     token = resp.json().get("access_token")
     if not token:
-        raise ParseError("API не вернул access_token")
+        raise ParseError("API РЅРµ РІРµСЂРЅСѓР» access_token")
     return token
 
 
@@ -68,12 +108,12 @@ def resolve_area(session, name, log=print):
         resp.raise_for_status()
         items = resp.json().get("items") or []
     except requests.RequestException as exc:
-        raise ParseError(f"Ошибка при поиске региона: {exc}")
+        raise ParseError(f"РћС€РёР±РєР° РїСЂРё РїРѕРёСЃРєРµ СЂРµРіРёРѕРЅР°: {exc}")
     if not items:
-        raise ParseError(f"Регион '{name}' не найден на hh.ru")
+        raise ParseError(f"Р РµРіРёРѕРЅ '{name}' РЅРµ РЅР°Р№РґРµРЅ РЅР° hh.ru")
     area_id = items[0]["id"]
     area_name = items[0].get("text") or items[0].get("title", name)
-    log(f"Регион: {area_name} (id={area_id})")
+    log(f"Р РµРіРёРѕРЅ: {area_name} (id={area_id})")
     return area_id
 
 
@@ -120,15 +160,15 @@ def describe_public_ip():
 def fetch_page(session, params):
     resp = session.get(BASE_URL, params=params, timeout=15)
     if resp.status_code == 400:
-        raise ParseError(f"API отклонил запрос: {resp.json()}")
+        raise ParseError(f"API РѕС‚РєР»РѕРЅРёР» Р·Р°РїСЂРѕСЃ: {resp.json()}")
     if resp.status_code == 403:
         ip = describe_public_ip()
-        ip_note = f" Твой внешний IP: {ip}." if ip else ""
+        ip_note = f" РўРІРѕР№ РІРЅРµС€РЅРёР№ IP: {ip}." if ip else ""
         raise ParseError(
-            "API hh.ru вернул 403 Forbidden. Причины: (1) поиск вакансий требует "
-            "авторизацию приложения — зарегистрируйся на dev.hh.ru и укажи "
-            "Client ID / Client Secret; (2) доступ возможен только с российских "
-            f"IP-адресов.{ip_note} Отключи VPN/прокси или используй выход через РФ.")
+            "API hh.ru РІРµСЂРЅСѓР» 403 Forbidden. РџСЂРёС‡РёРЅС‹: (1) РїРѕРёСЃРє РІР°РєР°РЅСЃРёР№ С‚СЂРµР±СѓРµС‚ "
+            "Р°РІС‚РѕСЂРёР·Р°С†РёСЋ РїСЂРёР»РѕР¶РµРЅРёСЏ вЂ” Р·Р°СЂРµРіРёСЃС‚СЂРёСЂСѓР№СЃСЏ РЅР° dev.hh.ru Рё СѓРєР°Р¶Рё "
+            "Client ID / Client Secret; (2) РґРѕСЃС‚СѓРї РІРѕР·РјРѕР¶РµРЅ С‚РѕР»СЊРєРѕ СЃ СЂРѕСЃСЃРёР№СЃРєРёС… "
+            f"IP-Р°РґСЂРµСЃРѕРІ.{ip_note} РћС‚РєР»СЋС‡Рё VPN/РїСЂРѕРєСЃРё РёР»Рё РёСЃРїРѕР»СЊР·СѓР№ РІС‹С…РѕРґ С‡РµСЂРµР· Р Р¤.")
     resp.raise_for_status()
     return resp.json()
 
@@ -155,11 +195,11 @@ def collect_vacancies(args, log=print, should_stop=None):
     client_secret = getattr(args, "client_secret", None) or os.environ.get("HH_CLIENT_SECRET")
     token = None
     if client_id and client_secret:
-        log("Получаю токен приложения...")
+        log("РџРѕР»СѓС‡Р°СЋ С‚РѕРєРµРЅ РїСЂРёР»РѕР¶РµРЅРёСЏ...")
         token = get_app_token(client_id, client_secret)
-        log("Токен приложения получен")
+        log("РўРѕРєРµРЅ РїСЂРёР»РѕР¶РµРЅРёСЏ РїРѕР»СѓС‡РµРЅ")
     elif getattr(args, "client_id", None) or os.environ.get("HH_CLIENT_ID"):
-        raise ParseError("Указан только Client ID — нужен ещё Client Secret")
+        raise ParseError("РЈРєР°Р·Р°РЅ С‚РѕР»СЊРєРѕ Client ID вЂ” РЅСѓР¶РµРЅ РµС‰С‘ Client Secret")
     session = make_session(token)
     base_params = {
         "text": args.text,
@@ -183,7 +223,7 @@ def collect_vacancies(args, log=print, should_stop=None):
 
     for window_index, (date_from, date_to) in enumerate(windows):
         if len(windows) > 1:
-            log(f"Период {window_index + 1}/{len(windows)}: {date_from} — {date_to}")
+            log(f"РџРµСЂРёРѕРґ {window_index + 1}/{len(windows)}: {date_from} вЂ” {date_to}")
         params = dict(base_params)
         params["page"] = 0
         if date_from:
@@ -202,15 +242,15 @@ def collect_vacancies(args, log=print, should_stop=None):
                 seen_ids.add(vacancy_id)
                 vacancies.append(parse_vacancy(item))
                 new_count += 1
-            log(f"Страница {params['page'] + 1}: получено {len(items)}, новых {new_count} "
-                f"(всего {len(vacancies)} из ~{data.get('found', 0)})")
+            log(f"РЎС‚СЂР°РЅРёС†Р° {params['page'] + 1}: РїРѕР»СѓС‡РµРЅРѕ {len(items)}, РЅРѕРІС‹С… {new_count} "
+                f"(РІСЃРµРіРѕ {len(vacancies)} РёР· ~{data.get('found', 0)})")
 
             max_pages = min(MAX_PAGES, data.get("pages", 0))
             if len(vacancies) >= args.limit or params["page"] + 1 >= max_pages \
                     or params["page"] + 1 >= args.pages:
                 break
             if should_stop and should_stop():
-                log("Остановлено пользователем")
+                log("РћСЃС‚Р°РЅРѕРІР»РµРЅРѕ РїРѕР»СЊР·РѕРІР°С‚РµР»РµРј")
                 stop_all = True
                 break
             params["page"] += 1
@@ -251,48 +291,48 @@ def save_outputs(vacancies, found, args, log=print):
         writer.writeheader()
         writer.writerows(vacancies)
 
-    log(f"Сохранено: {csv_path}")
-    log(f"Сохранено: {json_path}")
+    log(f"РЎРѕС…СЂР°РЅРµРЅРѕ: {csv_path}")
+    log(f"РЎРѕС…СЂР°РЅРµРЅРѕ: {json_path}")
     return csv_path, json_path
 
 
 def build_arg_parser():
     parser = argparse.ArgumentParser(
-        description="Парсер вакансий HeadHunter через api.hh.ru",
-        epilog='Пример: py hh_parser.py "python разработчик" --area Москва '
+        description="РџР°СЂСЃРµСЂ РІР°РєР°РЅСЃРёР№ HeadHunter С‡РµСЂРµР· api.hh.ru",
+        epilog='РџСЂРёРјРµСЂ: py hh_parser.py "python СЂР°Р·СЂР°Р±РѕС‚С‡РёРє" --area РњРѕСЃРєРІР° '
                "--salary 150000 --experience between1And3 --pages 3",
     )
-    parser.add_argument("text", nargs="?", default="", help="Поисковый запрос")
-    parser.add_argument("--area", help="Город или регион (например, Москва)")
-    parser.add_argument("--salary", type=int, help="Минимальная зарплата (рубли)")
-    parser.add_argument("--currency", default="RUR", help="Валюта зарплаты (по умолчанию RUR)")
+    parser.add_argument("text", nargs="?", default="", help="РџРѕРёСЃРєРѕРІС‹Р№ Р·Р°РїСЂРѕСЃ")
+    parser.add_argument("--area", help="Р“РѕСЂРѕРґ РёР»Рё СЂРµРіРёРѕРЅ (РЅР°РїСЂРёРјРµСЂ, РњРѕСЃРєРІР°)")
+    parser.add_argument("--salary", type=int, help="РњРёРЅРёРјР°Р»СЊРЅР°СЏ Р·Р°СЂРїР»Р°С‚Р° (СЂСѓР±Р»Рё)")
+    parser.add_argument("--currency", default="RUR", help="Р’Р°Р»СЋС‚Р° Р·Р°СЂРїР»Р°С‚С‹ (РїРѕ СѓРјРѕР»С‡Р°РЅРёСЋ RUR)")
     parser.add_argument("--experience", choices=EXPERIENCE_CHOICES,
                         help="noExperience, between1And3, between3And6, moreThan6")
     parser.add_argument("--days", type=int,
-                        help="Только вакансии, опубликованные за последние N дней")
-    parser.add_argument("--pages", type=int, default=5, help="Сколько страниц собрать (макс. 200)")
-    parser.add_argument("--per-page", type=int, default=50, help="Вакансий на страницу (до 100)")
-    parser.add_argument("--limit", type=int, default=10**9, help="Остановиться после N вакансий")
-    parser.add_argument("--delay", type=float, default=0.3, help="Пауза между запросами, сек")
-    parser.add_argument("--only-with-salary", action="store_true", help="Только вакансии с зарплатой")
+                        help="РўРѕР»СЊРєРѕ РІР°РєР°РЅСЃРёРё, РѕРїСѓР±Р»РёРєРѕРІР°РЅРЅС‹Рµ Р·Р° РїРѕСЃР»РµРґРЅРёРµ N РґРЅРµР№")
+    parser.add_argument("--pages", type=int, default=5, help="РЎРєРѕР»СЊРєРѕ СЃС‚СЂР°РЅРёС† СЃРѕР±СЂР°С‚СЊ (РјР°РєСЃ. 200)")
+    parser.add_argument("--per-page", type=int, default=50, help="Р’Р°РєР°РЅСЃРёР№ РЅР° СЃС‚СЂР°РЅРёС†Сѓ (РґРѕ 100)")
+    parser.add_argument("--limit", type=int, default=10**9, help="РћСЃС‚Р°РЅРѕРІРёС‚СЊСЃСЏ РїРѕСЃР»Рµ N РІР°РєР°РЅСЃРёР№")
+    parser.add_argument("--delay", type=float, default=0.3, help="РџР°СѓР·Р° РјРµР¶РґСѓ Р·Р°РїСЂРѕСЃР°РјРё, СЃРµРє")
+    parser.add_argument("--only-with-salary", action="store_true", help="РўРѕР»СЊРєРѕ РІР°РєР°РЅСЃРёРё СЃ Р·Р°СЂРїР»Р°С‚РѕР№")
     parser.add_argument("--client-id", default=os.environ.get("HH_CLIENT_ID"),
-                        help="Client ID приложения hh.ru (или env HH_CLIENT_ID)")
+                        help="Client ID РїСЂРёР»РѕР¶РµРЅРёСЏ hh.ru (РёР»Рё env HH_CLIENT_ID)")
     parser.add_argument("--client-secret", default=os.environ.get("HH_CLIENT_SECRET"),
-                        help="Client Secret приложения hh.ru (или env HH_CLIENT_SECRET)")
-    parser.add_argument("--out", default="hh_vacancies", help="База имени выходных файлов")
+                        help="Client Secret РїСЂРёР»РѕР¶РµРЅРёСЏ hh.ru (РёР»Рё env HH_CLIENT_SECRET)")
+    parser.add_argument("--out", default="hh_vacancies", help="Р‘Р°Р·Р° РёРјРµРЅРё РІС‹С…РѕРґРЅС‹С… С„Р°Р№Р»РѕРІ")
     return parser
 
 
 def main():
     args = build_arg_parser().parse_args()
     if not any([args.text, args.area, args.salary]):
-        sys.exit("Укажите хотя бы один параметр поиска: текст, регион или зарплату")
+        sys.exit("РЈРєР°Р¶РёС‚Рµ С…РѕС‚СЏ Р±С‹ РѕРґРёРЅ РїР°СЂР°РјРµС‚СЂ РїРѕРёСЃРєР°: С‚РµРєСЃС‚, СЂРµРіРёРѕРЅ РёР»Рё Р·Р°СЂРїР»Р°С‚Сѓ")
     try:
         vacancies, found = collect_vacancies(args)
     except ParseError as exc:
         sys.exit(str(exc))
     if not vacancies:
-        print("Ничего не найдено по заданным условиям")
+        print("РќРёС‡РµРіРѕ РЅРµ РЅР°Р№РґРµРЅРѕ РїРѕ Р·Р°РґР°РЅРЅС‹Рј СѓСЃР»РѕРІРёСЏРј")
         return
     save_outputs(vacancies, found, args)
 

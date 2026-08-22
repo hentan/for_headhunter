@@ -120,7 +120,16 @@ class App:
             return
         if not isinstance(data, dict):
             return
+        secret_value = ""
+        stored_secret = data.get("client_secret_value") or ""
+        if stored_secret and not data.get("client_secret_encrypted"):
+            secret_value = stored_secret
+        elif stored_secret:
+            secret_value = hp.unprotect_secret(stored_secret)
+        self.client_secret_var.set(secret_value)
         for key, var in self._setting_vars().items():
+            if key == "client_secret":
+                continue
             value = data.get(key)
             if isinstance(value, str) and not (key == "experience" and value not in EXPERIENCE_LABELS):
                 var.set(value)
@@ -129,6 +138,18 @@ class App:
 
     def save_settings(self):
         data = {key: var.get() for key, var in self._setting_vars().items()}
+        secret = data.pop("client_secret", "")
+        data["client_secret"] = ""
+        if secret:
+            try:
+                data["client_secret_value"] = hp.protect_secret(secret)
+                data["client_secret_encrypted"] = True
+            except OSError:
+                data["client_secret_value"] = secret
+                data["client_secret_encrypted"] = False
+        else:
+            data.pop("client_secret_value", None)
+            data.pop("client_secret_encrypted", None)
         try:
             SETTINGS_FILE.write_text(
                 json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
