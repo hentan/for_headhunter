@@ -5,7 +5,7 @@ import json
 import re
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import requests
@@ -85,53 +85,108 @@ def parse_vacancy(item):
     }
 
 
+def describe_public_ip():
+    try:
+        resp = requests.get("https://ipinfo.io/json", timeout=5)
+        data = resp.json()
+        country = data.get("country") or "?"
+        return f"{data.get('ip')} ({country})"
+    except Exception:
+        return None
+
+
 def fetch_page(session, params):
     resp = session.get(BASE_URL, params=params, timeout=15)
     if resp.status_code == 400:
         raise ParseError(f"API отклонил запрос: {resp.json()}")
+    if resp.status_code == 403:
+        ip = describe_public_ip()
+        ip_note = f" Твой внешний IP: {ip}." if ip else ""
+        raise ParseError(
+            "API hh.ru вернул 403 Forbidden: поиск вакансий доступен только "
+            f"с российских IP-адресов.{ip_note} "
+            "Отключи VPN/прокси или включи выход через российский сервер.")
     resp.raise_for_status()
     return resp.json()
 
 
+WINDOW_DAYS = 30
+
+
+def build_date_windows(days, now=None):
+    now = now or datetime.now()
+    start = now - timedelta(days=days)
+    step = timedelta(days=WINDOW_DAYS)
+    windows = []
+    cursor = start
+    while cursor < now:
+        end = min(cursor + step, now)
+        windows.append((cursor.strftime("%Y-%m-%dT%H:%M:%S"),
+                        end.strftime("%Y-%m-%dT%H:%M:%S")))
+        cursor = end
+    return windows
+
+
 def collect_vacancies(args, log=print, should_stop=None):
     session = make_session()
-    params = {
+    base_params = {
         "text": args.text,
         "per_page": min(args.per_page, 100),
-        "page": 0,
     }
     if args.area:
-        params["area"] = resolve_area(session, args.area, log)
+        base_params["area"] = resolve_area(session, args.area, log)
     if args.salary:
-        params["salary"] = args.salary
-        params["currency"] = args.currency
+        base_params["salary"] = args.salary
+        base_params["currency"] = args.currency
     if args.experience:
-        params["experience"] = args.experience
+        base_params["experience"] = args.experience
     if args.only_with_salary:
-        params["only_with_salary"] = "true"
+        base_params["only_with_salary"] = "true"
 
+    days = getattr(args, "days", None)
+    windows = build_date_windows(days) if days else [(None, None)]
     vacancies = []
-    found = None
-    while True:
-        data = fetch_page(session, params)
-        found = data.get("found", 0)
-        items = data.get("items") or []
-        for item in items:
-            vacancies.append(parse_vacancy(item))
-        log(f"Страница {params['page'] + 1}: получено {len(items)} вакансий "
-            f"(всего {len(vacancies)} из ~{found})")
+    seen_ids = set()
+    found_total = 0
 
-        max_pages = min(MAX_PAGES, data.get("pages", 0))
-        if len(vacancies) >= args.limit or params["page"] + 1 >= max_pages \
-                or params["page"] + 1 >= args.pages:
-            break
-        if should_stop and should_stop():
-            log("Остановлено пользователем")
-            break
-        params["page"] += 1
-        time.sleep(args.delay)
+    for window_index, (date_from, date_to) in enumerate(windows):
+        if len(windows) > 1:
+            log(f"Период {window_index + 1}/{len(windows)}: {date_from} — {date_to}")
+        params = dict(base_params)
+        params["page"] = 0
+        if date_from:
+            params["date_from"] = date_from
+            params["date_to"] = date_to
+        stop_all = False
+        while True:
+            data = fetch_page(session, params)
+            found_total += data.get("found", 0)
+            items = data.get("items") or []
+            new_count = 0
+            for item in items:
+                vacancy_id = item.get("id")
+                if vacancy_id in seen_ids:
+                    continue
+                seen_ids.add(vacancy_id)
+                vacancies.append(parse_vacancy(item))
+                new_count += 1
+            log(f"Страница {params['page'] + 1}: получено {len(items)}, новых {new_count} "
+                f"(всего {len(vacancies)} из ~{data.get('found', 0)})")
 
-    return vacancies, found
+            max_pages = min(MAX_PAGES, data.get("pages", 0))
+            if len(vacancies) >= args.limit or params["page"] + 1 >= max_pages \
+                    or params["page"] + 1 >= args.pages:
+                break
+            if should_stop and should_stop():
+                log("Остановлено пользователем")
+                stop_all = True
+                break
+            params["page"] += 1
+            time.sleep(args.delay)
+        if stop_all or len(vacancies) >= args.limit:
+            break
+
+    return vacancies, found_total
 
 
 def save_outputs(vacancies, found, args, log=print):
@@ -147,6 +202,7 @@ def save_outputs(vacancies, found, args, log=print):
             "salary": args.salary,
             "currency": args.currency,
             "experience": args.experience,
+            "days": getattr(args, "days", None),
             "only_with_salary": args.only_with_salary,
         },
         "found_total": found,
@@ -180,6 +236,8 @@ def build_arg_parser():
     parser.add_argument("--currency", default="RUR", help="Валюта зарплаты (по умолчанию RUR)")
     parser.add_argument("--experience", choices=EXPERIENCE_CHOICES,
                         help="noExperience, between1And3, between3And6, moreThan6")
+    parser.add_argument("--days", type=int,
+                        help="Только вакансии, опубликованные за последние N дней")
     parser.add_argument("--pages", type=int, default=5, help="Сколько страниц собрать (макс. 200)")
     parser.add_argument("--per-page", type=int, default=50, help="Вакансий на страницу (до 100)")
     parser.add_argument("--limit", type=int, default=10**9, help="Остановиться после N вакансий")

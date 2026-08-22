@@ -17,6 +17,8 @@ EXPERIENCE_LABELS = {
     "Более 6 лет": "moreThan6",
 }
 
+AREA_SUGGESTIONS = ["Рязань", "Москва", "Санкт-Петербург"]
+
 
 class App:
     def __init__(self, root):
@@ -41,8 +43,9 @@ class App:
 
         ttk.Label(form, text="Регион:").grid(row=1, column=0, sticky="w", pady=2)
         self.area_var = tk.StringVar()
-        ttk.Entry(form, textvariable=self.area_var).grid(row=1, column=1, sticky="ew", pady=2)
-        ttk.Label(form, text="(например, Москва)").grid(row=1, column=2, sticky="w")
+        ttk.Combobox(form, textvariable=self.area_var,
+                     values=AREA_SUGGESTIONS).grid(row=1, column=1, sticky="ew", pady=2)
+        ttk.Label(form, text="(можно ввести любой город)").grid(row=1, column=2, sticky="w")
 
         ttk.Label(form, text="Зарплата от:").grid(row=2, column=0, sticky="w", pady=2)
         salary_frame = ttk.Frame(form)
@@ -69,6 +72,9 @@ class App:
         ttk.Label(limits, text="Пауза, сек:").pack(side="left", padx=(15, 4))
         self.delay_var = tk.StringVar(value="0.3")
         ttk.Entry(limits, textvariable=self.delay_var, width=6).pack(side="left")
+        ttk.Label(limits, text="Опубликованы за, дней:").pack(side="left", padx=(15, 4))
+        self.days_var = tk.StringVar()
+        ttk.Entry(limits, textvariable=self.days_var, width=6).pack(side="left")
 
         self.only_salary_var = tk.BooleanVar()
         ttk.Checkbutton(form, text="Только вакансии с указанной зарплатой",
@@ -88,6 +94,7 @@ class App:
             "pages": self.pages_var,
             "per_page": self.per_page_var,
             "delay": self.delay_var,
+            "days": self.days_var,
             "only_with_salary": self.only_salary_var,
             "out": self.out_var,
         }
@@ -121,11 +128,42 @@ class App:
     def _build_log(self):
         log_frame = ttk.LabelFrame(self.root, text="Журнал", padding=5)
         log_frame.pack(fill="both", expand=True, padx=10, pady=5)
-        self.log_widget = tk.Text(log_frame, height=14, state="disabled", wrap="word")
+        self.log_widget = tk.Text(log_frame, height=14, wrap="word")
         scrollbar = ttk.Scrollbar(log_frame, command=self.log_widget.yview)
         self.log_widget.configure(yscrollcommand=scrollbar.set)
         self.log_widget.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
+
+        self.log_menu = tk.Menu(self.root, tearoff=0)
+        self.log_menu.add_command(label="Копировать выделенное",
+                                  command=lambda: self.log_widget.event_generate("<<Copy>>"))
+        self.log_menu.add_command(label="Копировать всё", command=self.copy_all_log)
+        self.log_menu.add_command(label="Выделить всё", command=self.select_all_log)
+        self.log_menu.add_separator()
+        self.log_menu.add_command(label="Очистить журнал", command=self.clear_log)
+        self.log_widget.bind("<Button-3>", self.show_log_menu)
+        self.log_widget.bind("<Key>", self.block_log_editing)
+        self.log_widget.bind("<Control-a>", self.select_all_log)
+
+    def show_log_menu(self, event):
+        self.log_menu.tk_popup(event.x_root, event.y_root)
+        return "break"
+
+    def block_log_editing(self, event):
+        if event.state & 0x0004 and event.keysym.lower() in ("c", "a"):
+            return None
+        return "break"
+
+    def select_all_log(self, event=None):
+        self.log_widget.tag_add("sel", "1.0", "end")
+        return "break"
+
+    def copy_all_log(self):
+        self.select_all_log()
+        self.log_widget.event_generate("<<Copy>>")
+
+    def clear_log(self):
+        self.log_widget.delete("1.0", "end")
 
     def _build_buttons(self):
         bar = ttk.Frame(self.root, padding=10)
@@ -139,10 +177,8 @@ class App:
 
     def log(self, message):
         def append():
-            self.log_widget.configure(state="normal")
             self.log_widget.insert("end", message + "\n")
             self.log_widget.see("end")
-            self.log_widget.configure(state="disabled")
         self.root.after(0, append)
 
     def build_args(self):
@@ -151,8 +187,11 @@ class App:
             per_page = int(self.per_page_var.get())
             delay = float(self.delay_var.get())
             salary = int(self.salary_var.get()) if self.salary_var.get().strip() else None
+            days = int(self.days_var.get()) if self.days_var.get().strip() else None
         except ValueError as exc:
             raise ValueError(f"Некорректное число в параметрах: {exc}")
+        if days is not None and days < 1:
+            raise ValueError("Количество дней должно быть не меньше 1")
         return SimpleNamespace(
             text=self.text_var.get().strip(),
             area=self.area_var.get().strip(),
@@ -163,6 +202,7 @@ class App:
             per_page=per_page,
             limit=10**9,
             delay=delay,
+            days=days,
             only_with_salary=self.only_salary_var.get(),
             out=self.out_var.get().strip() or "hh_vacancies",
         )

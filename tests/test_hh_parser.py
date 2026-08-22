@@ -2,10 +2,36 @@ import csv
 import json
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
 import hh_parser as hp
+
+
+class DateWindowsTests(unittest.TestCase):
+    def setUp(self):
+        self.now = datetime(2026, 8, 22, 12, 0, 0)
+
+    def test_single_window(self):
+        windows = hp.build_date_windows(5, now=self.now)
+        self.assertEqual(len(windows), 1)
+        start = datetime(2026, 8, 17, 12, 0, 0).strftime("%Y-%m-%dT%H:%M:%S")
+        end = self.now.strftime("%Y-%m-%dT%H:%M:%S")
+        self.assertEqual(windows[0], (start, end))
+
+    def test_long_range_splits_contiguously(self):
+        windows = hp.build_date_windows(75, now=self.now)
+        self.assertEqual(len(windows), 3)
+        parsed = [(datetime.strptime(f, "%Y-%m-%dT%H:%M:%S"),
+                   datetime.strptime(t, "%Y-%m-%dT%H:%M:%S")) for f, t in windows]
+        for (_, prev_end), (next_start, _) in zip(parsed, parsed[1:]):
+            self.assertEqual(prev_end, next_start)
+        self.assertEqual(parsed[-1][1], self.now)
+        expected_start = self.now - timedelta(days=75)
+        self.assertEqual(parsed[0][0], expected_start)
+        for start, end in parsed[:-1]:
+            self.assertLessEqual((end - start).days, hp.WINDOW_DAYS)
 
 
 class StripHtmlTests(unittest.TestCase):
@@ -114,6 +140,7 @@ class CliArgsTests(unittest.TestCase):
         self.assertIsNone(args.salary)
         self.assertEqual(args.currency, "RUR")
         self.assertIsNone(args.experience)
+        self.assertIsNone(getattr(args, "days", "missing"))
         self.assertEqual(args.pages, 5)
         self.assertEqual(args.per_page, 50)
 
