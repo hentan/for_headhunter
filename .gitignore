@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+
+settings.json
+hh_vacancies_*.csv
+hh_vacancies_*.json
